@@ -279,6 +279,7 @@ export class AIClient {
       body: JSON.stringify(payload),
       requestId: options?.requestId,
       authenticated: true,
+      timeoutMs: 60000,
       signal: options?.signal,
     });
     return res.embeddings;

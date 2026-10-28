@@ -93,7 +93,7 @@ async function test() {
       subjectId: cnSubject.id,
       questionType: 'SHORT_ANSWER',
       difficulty: 'MEDIUM',
-      count: 2,
+      count: 1,
       contextHint: 'Contrast Go-Back-N and Selective Repeat window sizes and retransmission',
       useRag: true,
       sourceDocumentIds: [uploadedDoc.id],

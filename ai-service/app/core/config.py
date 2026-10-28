@@ -45,17 +45,19 @@ class Settings(BaseSettings):
     internal_service_token: SecretStr
 
     # --- Generative AI provider -------------------------------------------
-    ai_provider: Literal["gemini"] = "gemini"
+    ai_provider: Literal["gemini", "ollama"] = "gemini"
     gemini_api_key: SecretStr | None = None
     gemini_model: str = Field(default="gemini-3.6-flash", min_length=1, max_length=100)
     gemini_fallback_models: tuple[str, ...] = Field(
         default=("gemini-3.5-flash", "gemini-2.5-flash"),
     )
+    ollama_base_url: str = Field(default="http://127.0.0.1:11434")
+    ollama_model: str = Field(default="qwen2.5:7b", min_length=1, max_length=100)
 
     # --- Limits and failure handling (server policy; never caller-controlled)
     # Timeout budget: max 2 attempts (1 initial + 1 retry) * 25s + <=4s backoff + ~3s overhead = ~57s,
     # safely below the Node.js backend AI_GENERATION_TIMEOUT_MS (70000ms).
-    ai_request_timeout_seconds: float = Field(default=25.0, ge=1.0, le=120.0)
+    ai_request_timeout_seconds: float = Field(default=120.0, ge=1.0, le=300.0)
     ai_max_retries: int = Field(default=1, ge=0, le=5)
     ai_retry_base_delay_seconds: float = Field(default=0.5, ge=0.0, le=10.0)
     ai_retry_max_delay_seconds: float = Field(default=4.0, ge=0.0, le=60.0)
@@ -92,6 +94,8 @@ class Settings(BaseSettings):
     def provider_configured(self) -> bool:
         if self.ai_provider == "gemini":
             return self.gemini_api_key is not None
+        if self.ai_provider == "ollama":
+            return bool(self.ollama_base_url and self.ollama_model)
         return False
 
     @property

@@ -19,4 +19,13 @@ def build_provider(settings: Settings) -> GenerativeProvider | None:
             model=settings.gemini_model,
             fallback_models=settings.gemini_fallback_models,
         )
+
+    if settings.ai_provider == "ollama":
+        from app.providers.ollama import OllamaProvider
+
+        return OllamaProvider(
+            base_url=settings.ollama_base_url,
+            model=settings.ollama_model,
+        )
+
     return None
