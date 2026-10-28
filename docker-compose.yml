@@ -1,0 +1,30 @@
+# Docker Compose for local development only.
+# Starts a PostgreSQL instance for the backend.
+# Usage: docker compose up -d db
+#
+# Credentials are for LOCAL development only; they must never be used in production.
+# A separate test database (pds_test) is provided for automated tests.
+
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: pds_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pds_dev
+      POSTGRES_PASSWORD: pds_dev_local
+      POSTGRES_DB: pds_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - pds_pgdata:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pds_dev -d pds_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pds_pgdata:
+    driver: local

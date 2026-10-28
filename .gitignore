@@ -1,0 +1,61 @@
+# Dependencies
+node_modules/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Build output
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Prisma generated client (regenerated via `npm run prisma:generate`)
+**/src/__generated__/
+
+# Environment files and secrets (examples are kept)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Test and coverage output
+coverage/
+htmlcov/
+.coverage
+.nyc_output/
+
+# Logs and temporary files
+logs/
+*.log
+npm-debug.log*
+tmp/
+temp/
+*.tmp
+
+# Local database and private storage artifacts
+*.sqlite
+*.sqlite3
+*.db
+pgdata/
+storage/
+uploads/
+**/uploads/
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

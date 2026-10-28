@@ -1,0 +1,141 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+
+/*
+ * Design tokens
+ * -------------
+ * All colors, type, radii and shadows live here. Components use the generated
+ * utilities (bg-canvas, text-ink-muted, rounded-card, ...) and never raw hex values.
+ * Tailwind v4: tokens declared in @theme become utilities and CSS variables.
+ */
+@theme {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  /* Surfaces: warm off-white canvas, never pure white */
+  --color-canvas: #f4f3ef;
+  --color-canvas-deep: #ecebe5;
+  --color-surface: #fbfaf8;
+  --color-surface-raised: #fefdfb;
+
+  /* Text: charcoal and warm gray (all pass WCAG AA on canvas/surface) */
+  --color-ink: #1d1d1f;
+  --color-ink-soft: #3d3b38;
+  --color-ink-muted: #66635d;
+  --color-ink-faint: #8a867f;
+
+  /* Borders */
+  --color-line: #e3e0d8;
+  --color-line-strong: #cfcbc1;
+
+  /* Accent: one restrained deep green */
+  --color-accent: #2d6a5d;
+  --color-accent-hover: #245549;
+  --color-accent-soft: #e4eeea;
+  --color-accent-ink: #1f4f44;
+
+  /* Semantic */
+  --color-success: #2b7149;
+  --color-success-soft: #e3f0e8;
+  --color-warning: #8a5d0a;
+  --color-warning-soft: #f6ecd3;
+  --color-danger: #a8362b;
+  --color-danger-hover: #8d2c23;
+  --color-danger-soft: #f8e5e2;
+
+  /* Radius scale */
+  --radius-control: 0.625rem;
+  --radius-card: 1rem;
+  --radius-panel: 1.25rem;
+
+  /* Elevation: one soft, low shadow */
+  --shadow-card: 0 1px 2px rgb(29 29 31 / 0.04), 0 4px 16px rgb(29 29 31 / 0.04);
+  --shadow-overlay: 0 12px 40px rgb(29 29 31 / 0.14);
+
+  /* Type scale (size / line-height) */
+  --text-page-title: 1.75rem;
+  --text-page-title--line-height: 2.125rem;
+  --text-display: 1.75rem;
+  --text-display--line-height: 2.125rem;
+  --text-title: 1.25rem;
+  --text-title--line-height: 1.75rem;
+  --text-section: 1.0625rem;
+  --text-section--line-height: 1.5rem;
+  --text-body: 0.9375rem;
+  --text-body--line-height: 1.5rem;
+  --text-support: 0.875rem;
+  --text-support--line-height: 1.375rem;
+  --text-label: 0.8125rem;
+  --text-label--line-height: 1.125rem;
+  --text-meta: 0.75rem;
+  --text-meta--line-height: 1rem;
+  --text-eyebrow: 0.75rem;
+  --text-eyebrow--line-height: 1rem;
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    line-height: var(--text-body--line-height);
+    color: var(--color-ink);
+    background-color: var(--color-canvas);
+    /* Very soft tonal depth so translucent surfaces have something to blur */
+    background-image: linear-gradient(180deg, var(--color-surface) 0%, var(--color-canvas) 480px, var(--color-canvas) 100%);
+    background-attachment: fixed;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Visible keyboard focus everywhere */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: var(--color-accent-soft);
+    color: var(--color-accent-ink);
+  }
+
+  /* Respect reduced-motion preferences */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  /* Translucent "frosted" surface used by header, sidebar and drawer only */
+  .glass {
+    background-color: rgb(251 250 248 / 0.72);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    backdrop-filter: saturate(180%) blur(20px);
+  }
+
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .glass {
+      background-color: var(--color-surface);
+    }
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .glass {
+      background-color: var(--color-surface);
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+  }
+}

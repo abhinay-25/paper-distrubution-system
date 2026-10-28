@@ -1,0 +1,847 @@
+// Prisma schema — foundational entity model for Paper Distribution System.
+// Generator targets the new Prisma 7 "prisma-client" provider with the pg adapter.
+//
+// Naming conventions:
+//   - Model names:  PascalCase   (→ table name: snake_case via @map)
+//   - Field names:  camelCase    (→ column name: snake_case via @map)
+//   - All primary keys: UUID v4
+//   - All timestamps: stored as timestamptz; mapped to DateTime in Prisma
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/__generated__/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Enumerations
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  SUPER_ADMIN     // Platform-level administrator (cross-institution)
+  INSTITUTION_ADMIN
+  EXAM_CONTROLLER // Controller of Examinations (manages exam configs & paper workflows; cannot bypass independent review)
+  EXAMINER        // Faculty / Question Setter
+  MODERATOR       // Independent Reviewer / Approver
+  VIEWER
+
+  @@map("user_role")
+}
+
+enum MembershipStatus {
+  ACTIVE
+  SUSPENDED
+  REVOKED
+
+  @@map("membership_status")
+}
+
+enum InstitutionStatus {
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+
+  @@map("institution_status")
+}
+
+// ---------------------------------------------------------------------------
+// Institution — top-level tenant.
+// Every piece of data belongs to exactly one Institution.
+// ---------------------------------------------------------------------------
+
+model Institution {
+  id        String            @id @default(uuid()) @map("id")
+  slug      String            @unique @map("slug")         // URL-safe identifier, e.g. "nairobi-uni"
+  name      String            @map("name")
+  logoUrl   String?           @map("logo_url")
+  status    InstitutionStatus @default(ACTIVE) @map("status")
+  createdAt DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime          @updatedAt       @map("updated_at") @db.Timestamptz
+
+  // Relations
+  memberships InstitutionMembership[]
+  auditLogs   AuditLog[]
+  subjects    Subject[]
+  topics      Topic[]
+  questions   Question[]
+  generationJobs QuestionGenerationJob[]
+  sourceDocuments SourceDocument[]
+  documentChunks DocumentChunk[]
+
+  @@map("institutions")
+}
+
+// ---------------------------------------------------------------------------
+// User — identity record.
+// A user exists once; they are linked to institutions via InstitutionMembership.
+// Passwords are hashed (bcrypt) before storage — plain text is never stored.
+// ---------------------------------------------------------------------------
+
+model User {
+  id             String    @id @default(uuid()) @map("id")
+  email          String    @unique @map("email")
+  hashedPassword String    @map("hashed_password")
+  displayName    String    @map("display_name")
+  avatarUrl      String?   @map("avatar_url")
+  isActive       Boolean   @default(true) @map("is_active")
+  lastLoginAt    DateTime? @map("last_login_at") @db.Timestamptz
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime  @updatedAt       @map("updated_at") @db.Timestamptz
+
+  // Relations
+  memberships       InstitutionMembership[]
+  auditLogs         AuditLog[]
+  questionRevisions QuestionRevision[]
+  uploadedSourceDocuments SourceDocument[]
+
+  @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+// InstitutionMembership — join table linking a User to an Institution.
+// A user can belong to multiple institutions with different roles.
+// ---------------------------------------------------------------------------
+
+model InstitutionMembership {
+  id            String           @id @default(uuid()) @map("id")
+  institutionId String           @map("institution_id")
+  userId        String           @map("user_id")
+  role          UserRole         @map("role")
+  status        MembershipStatus @default(ACTIVE) @map("status")
+  joinedAt      DateTime         @default(now()) @map("joined_at") @db.Timestamptz
+  updatedAt     DateTime         @updatedAt       @map("updated_at") @db.Timestamptz
+
+  // Relations
+  institution Institution @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // A user can only have one membership per institution
+  @@unique([institutionId, userId])
+  @@map("institution_memberships")
+}
+
+// ---------------------------------------------------------------------------
+// AuditLog — immutable event record for compliance and traceability.
+// Never updated; rows are only inserted.
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id            String   @id @default(uuid()) @map("id")
+  institutionId String?  @map("institution_id") // null for platform-level events
+  userId        String?  @map("user_id")        // null for system-generated events
+  action        String   @map("action")         // e.g. "user.created", "paper.distributed"
+  resourceType  String?  @map("resource_type")  // e.g. "User", "ExamPaper"
+  resourceId    String?  @map("resource_id")
+  payload       Json?    @map("payload")        // arbitrary event details
+  ipAddress     String?  @map("ip_address")
+  userAgent     String?  @map("user_agent")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  institution Institution? @relation(fields: [institutionId], references: [id], onDelete: SetNull)
+  user        User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([institutionId, createdAt(sort: Desc)])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([action])
+  @@map("audit_logs")
+}
+
+// ===========================================================================
+// STEP 4 — Academic Data and Question Bank
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Additional enumerations
+// ---------------------------------------------------------------------------
+
+enum SubjectStatus {
+  ACTIVE
+  ARCHIVED
+
+  @@map("subject_status")
+}
+
+enum TopicStatus {
+  ACTIVE
+  ARCHIVED
+
+  @@map("topic_status")
+}
+
+enum QuestionType {
+  MULTIPLE_CHOICE   // MCQ — one or more correct options
+  SHORT_ANSWER      // Free text, 1–3 sentences
+  LONG_ANSWER       // Essay / detailed response
+  NUMERICAL         // Exact numeric answer
+
+  @@map("question_type")
+}
+
+enum DifficultyLevel {
+  EASY
+  MEDIUM
+  HARD
+
+  @@map("difficulty_level")
+}
+
+enum QuestionLifecycle {
+  DRAFT     // Being authored; not yet available for paper assembly
+  ACTIVE    // Available for paper assembly
+  RETIRED   // Withdrawn from use; kept for history
+
+  @@map("question_lifecycle")
+}
+
+// ---------------------------------------------------------------------------
+// Subject — an institution-scoped course or subject.
+// Subject codes are unique within the institution.
+// ---------------------------------------------------------------------------
+
+model Subject {
+  id            String        @id @default(uuid()) @map("id")
+  institutionId String        @map("institution_id")
+  name          String        @map("name")
+  code          String        @map("code")            // e.g. "CS101"
+  description   String?       @map("description")
+  status        SubjectStatus @default(ACTIVE) @map("status")
+  createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime      @updatedAt       @map("updated_at") @db.Timestamptz
+
+  // Relations
+  institution    Institution             @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+  topics         Topic[]
+  questions      Question[]
+  generationJobs QuestionGenerationJob[]
+  sourceDocuments SourceDocument[]
+  examConfigs    ExamConfiguration[]
+
+  // Subject code is unique per institution (not globally).
+  @@unique([institutionId, code])
+  @@index([institutionId, status])
+  @@map("subjects")
+}
+
+// ---------------------------------------------------------------------------
+// Topic — a syllabus unit within a subject.
+// Sequence number allows ordered display; not globally unique.
+// ---------------------------------------------------------------------------
+
+model Topic {
+  id            String      @id @default(uuid()) @map("id")
+  institutionId String      @map("institution_id")
+  subjectId     String      @map("subject_id")
+  name          String      @map("name")
+  code          String?     @map("code")           // Optional short code, e.g. "U1"
+  description   String?     @map("description")
+  sequenceOrder Int         @default(0) @map("sequence_order")
+  status        TopicStatus @default(ACTIVE) @map("status")
+  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime    @updatedAt       @map("updated_at") @db.Timestamptz
+
+  // Relations
+  institution       Institution          @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+  subject           Subject              @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  questionTopicMaps QuestionTopicMap[]
+
+  @@index([subjectId, sequenceOrder])
+  @@map("topics")
+}
+
+// ---------------------------------------------------------------------------
+// Question — the logical identity of a question in the bank.
+// Content lives exclusively in QuestionRevision. This record holds lifecycle
+// state and a pointer to the current active revision.
+//
+// Concurrency note: currentRevisionNumber is the optimistic-concurrency token.
+// The revision-create service checks that the caller's expected value matches
+// before incrementing. A conflict → HTTP 409.
+// ---------------------------------------------------------------------------
+
+model Question {
+  id                    String            @id @default(uuid()) @map("id")
+  institutionId         String            @map("institution_id")
+  subjectId             String            @map("subject_id")
+  lifecycle             QuestionLifecycle @default(DRAFT) @map("lifecycle")
+  currentRevisionNumber Int               @default(0) @map("current_revision_number")
+  createdAt             DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt             DateTime          @updatedAt       @map("updated_at") @db.Timestamptz
+
+  // Relations
+  institution Institution        @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+  subject     Subject            @relation(fields: [subjectId], references: [id], onDelete: Restrict)
+  revisions   QuestionRevision[]
+
+  @@index([institutionId, subjectId])
+  @@index([institutionId, lifecycle])
+  @@map("questions")
+}
+
+// ---------------------------------------------------------------------------
+// QuestionRevision — immutable content snapshot.
+// A new row is inserted for every edit; existing rows are never updated.
+// revisionNumber is unique per question (enforced by the unique constraint).
+//
+// authorId is nullable because auth is not yet implemented. It will be set
+// from the authenticated session in the auth step.
+// ---------------------------------------------------------------------------
+
+model QuestionRevision {
+  id             String          @id @default(uuid()) @map("id")
+  questionId     String          @map("question_id")
+  revisionNumber Int             @map("revision_number")
+  questionText   String          @map("question_text")
+  questionType   QuestionType    @map("question_type")
+  marks          Decimal         @map("marks") @db.Decimal(6, 2)
+  language       String          @default("en") @map("language")   // BCP-47 tag, e.g. "en", "sw"
+  difficulty     DifficultyLevel? @map("difficulty")
+  explanation    String?         @map("explanation")               // Faculty notes; not shown to candidates
+  authorId       String?         @map("author_id")                 // Set once auth is implemented
+  createdAt      DateTime        @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  question          Question          @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  author            User?             @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  questionTopicMaps QuestionTopicMap[]
+  analyses          QuestionAnalysis[]
+  questionSlots     QuestionSlot[]
+
+  // A revision number is unique within its question.
+  @@unique([questionId, revisionNumber])
+  @@index([questionId, revisionNumber(sort: Desc)])
+  @@map("question_revisions")
+}
+
+// ---------------------------------------------------------------------------
+// QuestionTopicMap — M:N between a question revision and syllabus topics.
+// Stored per revision so topic associations are part of the immutable snapshot.
+// Cross-institution references are prevented in application logic.
+// ---------------------------------------------------------------------------
+
+model QuestionTopicMap {
+  id         String @id @default(uuid()) @map("id")
+  revisionId String @map("revision_id")
+  topicId    String @map("topic_id")
+
+  revision QuestionRevision @relation(fields: [revisionId], references: [id], onDelete: Cascade)
+  topic    Topic            @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@unique([revisionId, topicId])
+  @@map("question_topic_maps")
+}
+
+// ===========================================================================
+// STEP 6 — Question Intelligence: AI Analysis Results
+// ===========================================================================
+
+// Bloom's Taxonomy cognitive levels for question classification.
+enum BloomsLevel {
+  REMEMBER
+  UNDERSTAND
+  APPLY
+  ANALYZE
+  EVALUATE
+  CREATE
+  UNDETERMINED
+
+  @@map("blooms_level")
+}
+
+// AI-suggested difficulty levels (distinct from faculty-assigned DifficultyLevel).
+enum AIDifficultySuggestion {
+  EASY
+  MEDIUM
+  HARD
+  UNDETERMINED
+
+  @@map("ai_difficulty_suggestion")
+}
+
+// Review status for AI analysis results.
+enum AIAnalysisReviewStatus {
+  PENDING     // Faculty has not yet reviewed
+  ACCEPTED    // Faculty accepted the AI suggestion
+  OVERRIDDEN  // Faculty provided their own assessment (different from AI)
+  DISMISSED   // Faculty dismissed the suggestion without accepting or overriding
+
+  @@map("ai_analysis_review_status")
+}
+
+// ---------------------------------------------------------------------------
+// QuestionAnalysis — persisted AI analysis result for a question revision.
+//
+// Design rules:
+// - One row per (revisionId, analysisRun). A re-analysis creates a new row;
+//   old rows are retained for audit purposes.
+// - AI-suggested values are stored in `ai_*` prefixed columns.
+// - Faculty override values are stored in `faculty_*` prefixed columns.
+// - Faculty-assigned difficulty (QuestionRevision.difficulty) is NEVER
+//   modified by this service; it is set only through the normal edit flow.
+// - `reviewStatus` tracks whether a faculty member has acted on the suggestion.
+// - `reviewedAt` and `reviewedBy` are set when faculty action is recorded.
+// ---------------------------------------------------------------------------
+
+model QuestionAnalysis {
+  id         String @id @default(uuid()) @map("id")
+  revisionId String @map("revision_id")
+
+  // ---- AI Classification ------------------------------------------------
+  aiBloomsLevel      BloomsLevel @map("ai_blooms_level")
+  aiBloomsConfidence Float       @map("ai_blooms_confidence") // 0.0–1.0
+  aiSubjectTags      String[]    @map("ai_subject_tags")      // up to 10
+  aiQuestionTypeHint String      @map("ai_question_type_hint")
+
+  // ---- AI Difficulty Estimation -----------------------------------------
+  aiSuggestedDifficulty   AIDifficultySuggestion @map("ai_suggested_difficulty")
+  aiDifficultyConfidence  Float                  @map("ai_difficulty_confidence")
+  aiDifficultyRationale   String                 @map("ai_difficulty_rationale")
+
+  // ---- Duplicate Detection Summary --------------------------------------
+  // Full candidate list is stored as JSON for auditability.
+  hasPotentialDuplicates Boolean @default(false) @map("has_potential_duplicates")
+  hasNearDuplicates      Boolean @default(false)  @map("has_near_duplicates")
+  duplicateCandidates    Json    @default("[]")    @map("duplicate_candidates")
+  // Thresholds in effect at analysis time (documented as provisional).
+  nearDuplicateThreshold      Float @default(0.90) @map("near_duplicate_threshold")
+  potentialDuplicateThreshold Float @default(0.75) @map("potential_duplicate_threshold")
+
+  // ---- Faculty Review ---------------------------------------------------
+  reviewStatus AIAnalysisReviewStatus @default(PENDING) @map("review_status")
+  reviewedAt   DateTime?              @map("reviewed_at") @db.Timestamptz
+  reviewedBy   String?                @map("reviewed_by") // userId
+
+  // Faculty override: only set when reviewStatus = OVERRIDDEN
+  facultyBloomsLevel      BloomsLevel?           @map("faculty_blooms_level")
+  facultyDifficulty       DifficultyLevel?        @map("faculty_difficulty")
+  facultyNotes            String?                @map("faculty_notes") // max 1000 chars
+
+  // ---- Provenance -------------------------------------------------------
+  aiProvider  String   @map("ai_provider")   // e.g. "gemini"
+  aiModel     String   @map("ai_model")      // e.g. "gemini-3.8-flash"
+  durationMs  Int      @map("duration_ms")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  revision QuestionRevision @relation(fields: [revisionId], references: [id], onDelete: Cascade)
+
+  @@index([revisionId, createdAt(sort: Desc)])
+  @@index([reviewStatus])
+  @@map("question_analyses")
+}
+
+// ===========================================================================
+// STEP 7 — AI-Powered Question Generation
+// ===========================================================================
+
+// Status of a bulk generation job.
+enum GenerationJobStatus {
+  PENDING     // Created; not yet sent to AI service
+  RUNNING     // AI call in progress
+  COMPLETED   // AI responded; results stored in GeneratedQuestion rows
+  FAILED      // AI call failed; see errorMessage
+
+  @@map("generation_job_status")
+}
+
+// Faculty action on an individual generated question.
+enum GeneratedQuestionStatus {
+  PENDING     // Awaiting faculty review
+  APPROVED    // Faculty approved — question was added to the bank
+  REJECTED    // Faculty rejected; will not be added to the bank
+  EDITED      // Faculty approved with edits; question added with modifications
+
+  @@map("generated_question_status")
+}
+
+// ---------------------------------------------------------------------------
+// QuestionGenerationJob — tracks a batch AI generation request.
+//
+// Design rules:
+//  - One job per faculty request. A job holds the original parameters and
+//    the overall status. Generated questions are rows in GeneratedQuestion.
+//  - Jobs are created by the Node.js backend before calling the AI service.
+//  - The AI service has no direct DB access; results are returned to Node.js
+//    which then persists them.
+//  - Jobs are never deleted; they form an audit trail.
+// ---------------------------------------------------------------------------
+
+model QuestionGenerationJob {
+  id            String              @id @default(uuid()) @map("id")
+  institutionId String              @map("institution_id")
+  subjectId     String              @map("subject_id")
+  topicId       String?             @map("topic_id")      // optional topic scope
+  requestedBy   String?             @map("requested_by")  // userId; nullable until auth step
+
+  // ---- Generation parameters (immutable after creation) ------------------
+  questionType  QuestionType        @map("question_type")
+  difficulty    DifficultyLevel?    @map("difficulty")    // optional target difficulty
+  count         Int                 @map("count")         // number of questions requested (1–20)
+  language      String              @default("en") @map("language")
+  contextHint       String?             @map("context_hint")  // optional faculty-provided topic hint (max 500 chars)
+  sourceDocumentId  String?             @map("source_document_id")
+  sourceDocumentIds String[]            @default([]) @map("source_document_ids")
+  groundingMode     String?             @map("grounding_mode")
+
+  // ---- Job state ---------------------------------------------------------
+  status        GenerationJobStatus @default(PENDING) @map("status")
+  errorMessage  String?             @map("error_message")
+  aiProvider    String?             @map("ai_provider")
+  aiModel       String?             @map("ai_model")
+  durationMs    Int?                @map("duration_ms")
+
+  createdAt     DateTime            @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime            @updatedAt       @map("updated_at") @db.Timestamptz
+
+  // Relations
+  institution        Institution         @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+  subject            Subject             @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  sourceDocument     SourceDocument?     @relation(fields: [sourceDocumentId], references: [id], onDelete: SetNull)
+  generatedQuestions GeneratedQuestion[]
+
+  @@index([institutionId, status])
+  @@index([institutionId, subjectId])
+  @@map("question_generation_jobs")
+}
+
+// ---------------------------------------------------------------------------
+// GeneratedQuestion — a single AI-generated question candidate.
+//
+// Design rules:
+//  - AI output is stored verbatim; it is never silently applied to the bank.
+//  - Faculty must explicitly APPROVE (optionally with edits) before a real
+//    Question row is created. The link is recorded in promotedQuestionId.
+//  - Rejected rows are retained for audit; they are marked REJECTED.
+//  - `suggestedAnswer` and `explanation` are advisory; faculty may clear them.
+// ---------------------------------------------------------------------------
+
+model GeneratedQuestion {
+  id        String @id @default(uuid()) @map("id")
+  jobId     String @map("job_id")
+
+  // ---- AI output (advisory) -----------------------------------------------
+  questionText     String           @map("question_text")
+  questionType     QuestionType     @map("question_type")
+  suggestedAnswer  String?          @map("suggested_answer")  // AI-suggested answer/key points
+  explanation      String?          @map("explanation")       // AI-generated explanation
+  difficulty       DifficultyLevel? @map("difficulty")        // AI-suggested difficulty
+  bloomsLevel      String?          @map("blooms_level")      // AI-suggested Bloom's level
+  subjectTags      String[]         @map("subject_tags")
+  sourceChunkIds   String[]         @default([]) @map("source_chunk_ids")
+  metadata         Json?            @map("metadata")
+
+  // ---- Faculty review -----------------------------------------------------
+  status           GeneratedQuestionStatus @default(PENDING) @map("status")
+  reviewedAt       DateTime?               @map("reviewed_at") @db.Timestamptz
+  reviewedBy       String?                 @map("reviewed_by")   // userId
+  reviewNotes      String?                 @map("review_notes")  // max 1000 chars
+
+  // ---- Promotion record (set when APPROVED or EDITED) --------------------
+  promotedQuestionId String? @map("promoted_question_id")  // ID of the Question row created
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt       @map("updated_at") @db.Timestamptz
+
+  // Relations
+  job QuestionGenerationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+  @@index([status])
+  @@map("generated_questions")
+}
+
+// ===========================================================================
+// STEP 7.5 — Source Documents and RAG Grounding
+// ===========================================================================
+
+enum DocumentStatus {
+  UPLOADED
+  PROCESSING
+  INDEXED
+  FAILED
+
+  @@map("document_status")
+}
+
+model SourceDocument {
+  id                    String         @id @default(uuid()) @map("id")
+  institutionId         String         @map("institution_id")
+  uploadedById          String?        @map("uploaded_by_id")
+  subjectId             String?        @map("subject_id")
+  title                 String         @map("title")
+  originalFilename      String         @map("original_filename")
+  storagePath           String         @map("storage_path")
+  mimeType              String         @map("mime_type")
+  fileSizeBytes         Int            @map("file_size_bytes")
+  contentHash           String         @map("content_hash") // SHA-256
+  status                DocumentStatus @default(UPLOADED) @map("status")
+  errorMessage          String?        @map("error_message")
+  pageCount             Int?           @map("page_count")
+  chunkCount            Int            @default(0) @map("chunk_count")
+  processingStartedAt   DateTime?      @map("processing_started_at") @db.Timestamptz
+  processingCompletedAt DateTime?      @map("processing_completed_at") @db.Timestamptz
+  createdAt             DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt             DateTime       @updatedAt       @map("updated_at") @db.Timestamptz
+
+  institution    Institution             @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+  subject        Subject?                @relation(fields: [subjectId], references: [id], onDelete: SetNull)
+  uploadedBy     User?                   @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+  chunks         DocumentChunk[]
+  generationJobs QuestionGenerationJob[]
+
+  @@index([institutionId])
+  @@index([status])
+  @@index([subjectId])
+  @@map("source_documents")
+}
+
+model DocumentChunk {
+  id            String   @id @default(uuid()) @map("id")
+  documentId    String   @map("document_id")
+  institutionId String   @map("institution_id")
+  chunkIndex    Int      @map("chunk_index")
+  chunkText     String   @map("chunk_text") @db.Text
+  pageNumber    Int?     @map("page_number")
+  sectionTitle  String?  @map("section_title")
+  tokenCount    Int?     @map("token_count")
+  embeddingJson String   @map("embedding_json") @db.Text // JSON array of float32 values
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  document    SourceDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  institution Institution    @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@index([institutionId])
+  @@map("document_chunks")
+}
+
+// ===========================================================================
+// STEP 8 — Examination Configuration and Question Paper Builder
+// ===========================================================================
+
+// Status of a paper draft.
+enum PaperStatus {
+  DRAFT       // Work-in-progress; can be freely edited
+  SUBMITTED   // Submitted for review/approval (locked from further edit)
+  APPROVED    // Approved by an authorized reviewer
+  REJECTED    // Returned for revision
+
+  @@map("paper_status")
+}
+
+// ---------------------------------------------------------------------------
+// ExamConfiguration — institution-level exam setup.
+// Defines overall parameters (e.g. duration, passing marks) that a paper must satisfy.
+// ---------------------------------------------------------------------------
+
+model ExamConfiguration {
+  id            String   @id @default(uuid()) @map("id")
+  institutionId String   @map("institution_id")
+  subjectId     String   @map("subject_id")
+  name          String   @map("name")               // e.g. "Mid-Term Exam 2024"
+  description   String?  @map("description")
+  totalMarks    Decimal  @map("total_marks")  @db.Decimal(8, 2)
+  passingMarks  Decimal? @map("passing_marks") @db.Decimal(8, 2)
+  durationMinutes Int?   @map("duration_minutes")
+  instructions  String?  @map("instructions")       // Exam instructions for candidates
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime @updatedAt       @map("updated_at") @db.Timestamptz
+
+  // Relations
+  subject      Subject       @relation(fields: [subjectId], references: [id], onDelete: Restrict)
+  papers       ExamPaper[]
+
+  @@index([institutionId, subjectId])
+  @@index([institutionId, isActive])
+  @@map("exam_configurations")
+}
+
+// ---------------------------------------------------------------------------
+// ExamPaper — a draft question paper built by faculty.
+// Contains sections with question slots. Immutable question revision IDs
+// are captured at selection time, so later edits to questions don't silently
+// alter a saved paper.
+// ---------------------------------------------------------------------------
+
+model ExamPaper {
+  id              String      @id @default(uuid()) @map("id")
+  institutionId   String      @map("institution_id")
+  configId        String      @map("config_id")
+  title           String      @map("title")
+  status          PaperStatus @default(DRAFT) @map("status")
+  version         Int         @default(1) @map("version")    // increments on each save
+  concurrencyVersion Int      @default(0) @map("concurrency_version")
+  createdBy       String?     @map("created_by")             // userId
+  submittedAt     DateTime?   @map("submitted_at")  @db.Timestamptz
+  approvedAt      DateTime?   @map("approved_at")   @db.Timestamptz
+  approvedBy      String?     @map("approved_by")             // userId
+  rejectionReason String?     @map("rejection_reason")
+  notes           String?     @map("notes")
+  createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime    @updatedAt       @map("updated_at") @db.Timestamptz
+
+  // Relations
+  config   ExamConfiguration @relation(fields: [configId], references: [id], onDelete: Restrict)
+  sections PaperSection[]
+  versions PaperVersion[]
+  submissions  PaperSubmission[]
+  pdfArtifacts PaperPdfArtifact[]
+
+  @@index([institutionId, status])
+  @@index([institutionId, configId])
+  @@map("exam_papers")
+}
+
+// ---------------------------------------------------------------------------
+// PaperSection — a named section within an exam paper.
+// e.g. "Section A — Short Answers", "Section B — Long Answers"
+// ---------------------------------------------------------------------------
+
+model PaperSection {
+  id              String  @id @default(uuid()) @map("id")
+  paperId         String  @map("paper_id")
+  sectionLabel    String  @map("section_label")      // e.g. "A", "B", "1"
+  title           String  @map("title")              // e.g. "Short Answer Questions"
+  description     String? @map("description")
+  sequenceOrder   Int     @default(0) @map("sequence_order")
+  // Optional-choice rules: students must answer `requiredAnswers` out of `totalSlots` questions
+  totalSlots      Int     @default(0) @map("total_slots")
+  requiredAnswers Int?    @map("required_answers")   // null = answer all
+  sectionMarks    Decimal @default(0) @map("section_marks") @db.Decimal(8, 2)
+
+  // Relations
+  paper ExamPaper    @relation(fields: [paperId], references: [id], onDelete: Cascade)
+  slots QuestionSlot[]
+
+  @@index([paperId, sequenceOrder])
+  @@map("paper_sections")
+}
+
+// ---------------------------------------------------------------------------
+// QuestionSlot — a question assignment within a paper section.
+// References the specific immutable QuestionRevision, not the mutable Question.
+// A stable slotId (UUID) is generated at creation; never array-position-based.
+// ---------------------------------------------------------------------------
+
+model QuestionSlot {
+  id             String  @id @default(uuid()) @map("id")
+  sectionId      String  @map("section_id")
+  questionId     String  @map("question_id")       // logical Question identity
+  revisionId     String  @map("revision_id")       // IMMUTABLE snapshot used in this paper
+  sequenceOrder  Int     @default(0) @map("sequence_order")
+  allocatedMarks Decimal @map("allocated_marks") @db.Decimal(6, 2)  // may override revision marks
+  notes          String? @map("notes")              // faculty notes for this slot
+
+  // Relations
+  section  PaperSection     @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  revision QuestionRevision @relation(fields: [revisionId], references: [id], onDelete: Restrict)
+
+  @@unique([sectionId, sequenceOrder])
+  @@index([sectionId])
+  @@map("question_slots")
+}
+
+// ===========================================================================
+// STEP 9 — Paper Versioning and Snapshot Management
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// PaperVersion — immutable snapshot of a question paper at a point in time.
+// Captures full paper structure, sections, slots, and question metadata.
+// ---------------------------------------------------------------------------
+
+model PaperVersion {
+  id             String    @id @default(uuid()) @map("id")
+  paperId        String    @map("paper_id")
+  versionNumber  Int       @map("version_number")
+  snapshotJson   Json      @map("snapshot_json")   // Full paper snapshot at this point
+  changeNote     String?   @map("change_note")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  paper ExamPaper @relation(fields: [paperId], references: [id], onDelete: Cascade)
+  submissions  PaperSubmission[]
+  pdfArtifacts PaperPdfArtifact[]
+
+  @@unique([paperId, versionNumber])
+  @@index([paperId])
+  @@map("paper_versions")
+}
+
+// ===========================================================================
+// STEP 10 — Independent Paper Approval and PDF Generation
+// ===========================================================================
+
+enum PaperSubmissionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CHANGES_REQUESTED
+
+  @@map("paper_submission_status")
+}
+
+// ---------------------------------------------------------------------------
+// PaperSubmission — immutable submission record binding an exact paper version
+// snapshot to an independent approval workflow.
+// ---------------------------------------------------------------------------
+
+model PaperSubmission {
+  id                 String                @id @default(uuid()) @map("id")
+  institutionId      String                @map("institution_id")
+  paperId            String                @map("paper_id")
+  paperVersionId     String                @map("paper_version_id")
+  submittedBy        String                @map("submitted_by")        // userId of submitter
+  submitterNotes     String?               @map("submitter_notes")
+  status             PaperSubmissionStatus @default(PENDING) @map("status")
+  validationSnapshot Json                  @map("validation_snapshot") // Validation state at submission
+  decidedBy          String?               @map("decided_by")          // userId of independent reviewer
+  decision           String?               @map("decision")            // APPROVED | REJECTED | CHANGES_REQUESTED
+  reviewComments     String?               @map("review_comments")     // Mandatory when rejecting / requesting changes
+  submittedAt        DateTime              @default(now()) @map("submitted_at") @db.Timestamptz
+  decidedAt          DateTime?             @map("decided_at") @db.Timestamptz
+
+  // Relations
+  paper   ExamPaper    @relation(fields: [paperId], references: [id], onDelete: Cascade)
+  version PaperVersion @relation(fields: [paperVersionId], references: [id], onDelete: Restrict)
+
+  @@index([institutionId, status])
+  @@index([paperId, submittedAt(sort: Desc)])
+  @@map("paper_submissions")
+}
+
+// ---------------------------------------------------------------------------
+// PaperPdfArtifact — persisted PDF generation metadata and cryptographic hash.
+// Strictly bound to an approved PaperVersion snapshot.
+// ---------------------------------------------------------------------------
+
+model PaperPdfArtifact {
+  id              String   @id @default(uuid()) @map("id")
+  institutionId   String   @map("institution_id")
+  paperId         String   @map("paper_id")
+  paperVersionId  String   @map("paper_version_id")
+  templateId      String   @default("cbit-autonomous-v1") @map("template_id")
+  templateVersion String   @default("1.0.0") @map("template_version")
+  rendererVersion String   @default("1.0.0") @map("renderer_version")
+  fileName        String   @map("file_name")
+  filePath        String   @map("file_path")
+  fileSizeBytes   Int      @map("file_size_bytes")
+  checksumSha256  String   @map("checksum_sha256")
+  pageCount       Int      @default(1) @map("page_count")
+  generatedBy     String?  @map("generated_by")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  paper   ExamPaper    @relation(fields: [paperId], references: [id], onDelete: Cascade)
+  version PaperVersion @relation(fields: [paperVersionId], references: [id], onDelete: Restrict)
+
+  @@index([institutionId, paperId])
+  @@index([paperVersionId])
+  @@map("paper_pdf_artifacts")
+}
+
+
+
